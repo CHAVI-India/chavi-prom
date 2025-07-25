@@ -46,7 +46,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
 pytz==2025.2
 PyYAML==6.0.2
-qrcode==7.4.2
+qrcode==8.2
 requests==2.32.4
 rich==14.0.0
 scipy==1.16.0
