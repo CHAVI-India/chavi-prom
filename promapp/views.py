@@ -1526,11 +1526,26 @@ class QuestionnaireResponseView(LoginRequiredMixin, PermissionRequiredMixin, Use
         self.object = self.get_object()
         can_answer, next_available = self.check_interval(self.object)
         
+        logger = logging.getLogger("promapp.questionnaire_responses")
+        logger.info(f"Dispatch for questionnaire {self.object.questionnaire.id} (order: {self.object.questionnaire.questionnaire_order}), can_answer: {can_answer}")
+        
         if not can_answer:
-            messages.warning(request, _('You cannot answer this questionnaire yet. You can answer it again in %(time)s.') % {
-                'time': timeuntil(next_available)
-            })
-            return self.render_to_response(self.get_context_data(can_answer=False, next_available=next_available))
+            # If this questionnaire cannot be answered yet, try to find the next available one
+            # This handles the case where a redirect brings us to a questionnaire that was recently completed
+            next_questionnaire = self.get_next_available_questionnaire(self.object)
+            
+            if next_questionnaire and next_questionnaire.id != self.object.id:
+                # Redirect to the next available questionnaire
+                logger.info(f"Redirecting from questionnaire {self.object.questionnaire.id} to {next_questionnaire.questionnaire.id}")
+                messages.info(request, _('Redirecting to the next available questionnaire.'))
+                return redirect('questionnaire_response', pk=next_questionnaire.id)
+            else:
+                # No more questionnaires available, show the interval message
+                logger.info(f"No more questionnaires available, redirecting to list")
+                messages.warning(request, _('You cannot answer this questionnaire yet. You can answer it again in %(time)s.') % {
+                    'time': timeuntil(next_available)
+                })
+                return redirect('my_questionnaire_list')
         
         return super().dispatch(request, *args, **kwargs)
 
@@ -1629,33 +1644,16 @@ class QuestionnaireResponseView(LoginRequiredMixin, PermissionRequiredMixin, Use
         
         # Check each subsequent questionnaire to see if it can be answered
         for pq in next_questionnaires:
-            # Get the last submission for this questionnaire
-            last_submission = QuestionnaireSubmission.objects.filter(
-                patient_questionnaire=pq
-            ).order_by('-submission_date').first()
-            
-            if last_submission:
-                # Calculate when the questionnaire can be answered next
-                interval_seconds = pq.questionnaire.questionnaire_answer_interval
-                
-                # Handle special case: if interval is 0, allow immediate re-answering
-                if interval_seconds == 0:
-                    return pq
-                # Handle edge case: if interval is negative, treat as 0
-                elif interval_seconds < 0:
-                    return pq
-                else:
-                    next_available = last_submission.submission_date + timezone.timedelta(seconds=interval_seconds)
-                    if timezone.now() >= next_available:
-                        return pq
-            else:
-                # If no previous submission, can answer immediately
+            can_answer, _ = self.check_interval(pq)
+            if can_answer:
                 return pq
         
-        # No more available questionnaires
+        # No more available questionnaires in the sequence after current one
         return None
 
     def post(self, request, *args, **kwargs):
+        logger = logging.getLogger("promapp.questionnaire_responses")
+        
         # Check if user has permission to add responses
         if not request.user.has_perm('promapp.add_questionnaireitemresponse'):
             messages.error(request, _('You do not have permission to submit responses.'))
@@ -1663,6 +1661,7 @@ class QuestionnaireResponseView(LoginRequiredMixin, PermissionRequiredMixin, Use
 
         # Get the patient questionnaire
         patient_questionnaire = self.get_object()
+        logger.info(f"POST request for questionnaire {patient_questionnaire.questionnaire.id} by patient {request.user.patient.id}")
         
         # Get all items for this questionnaire with translations
         questionnaire_items, items_with_translations = self.get_translated_items(patient_questionnaire.questionnaire)
@@ -1703,15 +1702,19 @@ class QuestionnaireResponseView(LoginRequiredMixin, PermissionRequiredMixin, Use
                     # Construct scores will be calculated automatically by the post_save signal
                     # on QuestionnaireItemResponse (see models.py trigger_score_calculation_on_response)
                     
+                    logger.info(f"Submission {submission.id} created successfully for questionnaire {patient_questionnaire.questionnaire.id}")
+                    
                     # Find the next available questionnaire in sequence
                     next_questionnaire = self.get_next_available_questionnaire(patient_questionnaire)
                     
                     if next_questionnaire:
                         # Redirect to the next available questionnaire
+                        logger.info(f"Redirecting to next questionnaire {next_questionnaire.questionnaire.id} (order: {next_questionnaire.questionnaire.questionnaire_order})")
                         messages.success(request, _('Your responses have been saved successfully. Please continue with the next questionnaire.'))
                         return redirect('questionnaire_response', pk=next_questionnaire.id)
                     else:
                         # No more questionnaires available, redirect to list
+                        logger.info(f"No more questionnaires available, redirecting to list")
                         messages.success(request, _('Your responses have been saved successfully. You have completed all available questionnaires.'))
                         return redirect('my_questionnaire_list')
             except Exception as e:
