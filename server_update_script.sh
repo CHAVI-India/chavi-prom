@@ -40,5 +40,5 @@ python manage.py collectstatic --noinput
 # Restart Gunicorn installed using Supervisor
 
 echo "Restarting Gunicorn"
-sudo supervisorctl restart chavi-prom_gunicorn
+sudo supervisorctl restart all
 
